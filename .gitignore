@@ -1,0 +1,24 @@
+#python
+*.egg-info/
+
+__pycache__/
+
+__init__.py
+
+*.pyc
+
+.env
+
+# nested lerobot clone (separate git repo, not part of this project)
+/lerobot/
+
+# training data / outputs (large, regenerable)
+/datasets/
+/runs/
+
+# model weights and installers (large binaries, re-downloadable)
+*.pt
+*.deb
+
+# ultralytics cache files
+*.cache
