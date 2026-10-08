@@ -22,3 +22,9 @@ __init__.py
 
 # ultralytics cache files
 *.cache
+
+#aruco markers
+/aruco_markers/
+
+#checkerboard calibration images
+/checkerboard_calibration_images/
