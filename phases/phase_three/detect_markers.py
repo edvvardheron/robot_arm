@@ -4,6 +4,8 @@ import cv2 as cv
 import numpy as np
 import yaml
 
+ARM_POSITION = (0.2, 0, 0.42)
+
 with open('camera_calibration.yaml', 'r') as file:
     calibration_data = yaml.safe_load(file)
 
@@ -19,7 +21,10 @@ detector = cv.aruco.ArucoDetector(aruco_dict, parameters)
 
 
 cap = cv.VideoCapture(0)
+cap.set(cv.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv.CAP_PROP_FRAME_HEIGHT, 480)
 num_markers_detected = 0
+
 
 while True:
     ret, frame = cap.read()
@@ -66,8 +71,10 @@ while True:
                 font_scale = 0.7
                 color = (0, 255, 0)
                 thickness = 2
-                cv.putText(frame, f"ID: {ids.flatten()[0]}, Pos: ({x:.2f}, {y:.2f}, {z:.2f}), Dist: {distance:.2f} m", org, font, font_scale, color, thickness, cv.LINE_AA)
+                cv.putText(frame, f"ID: {id}, Pos: ({x:.2f}, {y:.2f}, {z:.2f}), Dist: {distance:.2f} m", org, font, font_scale, color, thickness, cv.LINE_AA)
 
+                marker_to_arm = ARM_POSITION - tvec.flatten()
+                print(f"Marker to Arm Vector: {marker_to_arm}")
 
 
     cv.imshow('Aruco Marker Detection', frame)

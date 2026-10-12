@@ -9,6 +9,8 @@ __init__.py
 
 .env
 
+.dvc
+
 # nested lerobot clone (separate git repo, not part of this project)
 /lerobot/
 
@@ -26,6 +28,6 @@ __init__.py
 #aruco markers
 /aruco_markers/
 
-#checkerboard calibration images
-/checkerboard_calibration_images/
+# calibration files
+/calibration/
 
