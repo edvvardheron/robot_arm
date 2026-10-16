@@ -50,6 +50,8 @@ def find_red_object(frame, frame_cx, frame_cy):
         cv.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
         rect = cv.minAreaRect(largest_contour)
         box = cv.boxPoints(rect).reshape(-1, 2).astype(np.int32)
+        angle = rect[2]
+        print(f"Detected red object at: x={x}, y={y}, w={w}, h={h}, angle={angle}")
         cv.drawContours(frame, [box], 0, (0, 0, 255), 2)
         cx = x + w // 2
         cy = y + h // 2
@@ -62,6 +64,7 @@ def find_red_object(frame, frame_cx, frame_cy):
 
         #show blob center
         cv.circle(frame, (cx, cy), 5, (255, 0, 0), -1)
+        cv.putText(frame, f"Angle: {angle:.2f}", (cx, cy - 10), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         return coord_x, coord_y, area
 
 #step 3

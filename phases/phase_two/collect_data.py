@@ -18,7 +18,7 @@ try:
         image_counter += 1
 
         #take a picture once per second and save it to the dataset folder
-        image_name = f'datasets/car2/image_{image_counter}.jpg'
+        image_name = f'datasets/phase_3/raw_images/image_{image_counter}.jpg'
         cv.imwrite(image_name, frame)
         time.sleep(1)
         cv.imshow('frame', frame)

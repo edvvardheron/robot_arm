@@ -37,7 +37,7 @@ import yaml
 
 CAMERA_INDEX = 0                         
 FRAME_W, FRAME_H = 640, 480              
-INTRINSICS_FILE = Path("camera_calibration.yaml")
+INTRINSICS_FILE = Path("calibration/camera_calibration.yaml")
 POSE_FILE = Path("calibration/camera_pose.json")
 ARUCO_DICT = cv.aruco.DICT_4X4_50
 
