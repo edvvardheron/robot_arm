@@ -6,7 +6,7 @@ import yaml
 
 ARM_POSITION = (0.2, 0, 0.42)
 
-with open('camera_calibration.yaml', 'r') as file:
+with open('calibration/camera_calibration.yaml', 'r') as file:
     calibration_data = yaml.safe_load(file)
 
 camera_matrix = np.array(calibration_data['camera_matrix'])
