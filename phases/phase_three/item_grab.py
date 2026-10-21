@@ -13,15 +13,6 @@ from calibration_setup.calibration import CameraToArm
 PORT = 'COM3'
 ROBOT_ID = 'follower_arm'
 
-UPPER_RED1 = np.array([5, 255, 255])
-LOWER_RED1 = np.array([0, 100, 100])
-UPPER_RED2 = np.array([179, 255, 255])
-LOWER_RED2 = np.array([170, 100, 100])
-
-PAN_SCAN_SPEED = -1
-PAN_SPEED = 0.1
-TILT_SPEED = 0.1
-
 L1 = 11.5 #length of the first arm segment in cm
 L2 = 13.5 #length of the second arm segment in cm
 L3 = 13.2 #length of the third arm segment in cm
@@ -36,9 +27,6 @@ DEADBAND = 10
 PAN_DIRECTION = 1
 TILT_DIRECTION = -1
 LOOP_DELAY = 0.01
-
-
-MIN_AREA = 2000  # Minimum area of the detected object to be considered valid
 
 JOINTS_LIMITS = {       # adjust to your calibration's safe range
     "shoulder_pan.pos": (-70, 70),
@@ -65,8 +53,8 @@ WRIST_SIGN,    WRIST_OFFSET    = -1.0, -90.0
 
 # --- extra geometry used by solve_arm_angles --------------------------------
 LOFF = 4.0           # fixed 90-degree bracket between arm 1 and the elbow axis, cm
-BRACKET_SIDE = 1     # +1 / -1. Must match the "Bracket on +90 deg side" tickbox in the visualiser
-PAN_AXIS_X = -3.5    # pan axis relative to the shoulder_lift axis, cm (+x = reach direction, so
+BRACKET_SIDE = -1     # +1 / -1. Must match the "Bracket on +90 deg side" tickbox in the visualiser
+PAN_AXIS_X = -3.5  # pan axis relative to the shoulder_lift axis, cm (+x = reach direction, so
                      # negative = pan axis sits behind the shoulder)
 ELBOW_UP = True      # which of the two IK solutions to use
 
@@ -91,9 +79,10 @@ def find_object(frame):
     best_box = None
     best_conf = CONF_THRESHOLD
     for i, box in enumerate(results[0].boxes):
-        cls_name = model.names[int(box.cls[0])]
+        #cls_name = model.names[int(box.cls[0])]
+        cls_name = 'brick'
         conf = float(box.conf[0])
-        if conf > best_conf:
+        if conf > best_conf and cls_name == 'tube':
             best_conf = conf
             best_box = box
         if best_box is None:
@@ -171,9 +160,9 @@ def solve_arm_angles(reach, pan_deg, z, angle, elbow_up=ELBOW_UP):
     # 5. Convert to the robot's joint convention.
     targets = {
         "shoulder_pan.pos":  PAN_SIGN * pan_deg + PAN_OFFSET,
-        "shoulder_lift.pos": SHOULDER_SIGN * math.degrees(q1) + SHOULDER_OFFSET,
-        "elbow_flex.pos":    ELBOW_SIGN * math.degrees(q2) + ELBOW_OFFSET,
-        "wrist_flex.pos":    WRIST_SIGN * math.degrees(q3) + WRIST_OFFSET,
+        "shoulder_lift.pos": (SHOULDER_SIGN * math.degrees(q1) + SHOULDER_OFFSET),
+        "elbow_flex.pos":    (ELBOW_SIGN * math.degrees(q2) + ELBOW_OFFSET),
+        "wrist_flex.pos":   90 + (WRIST_SIGN * math.degrees(q3) + WRIST_OFFSET),
     }
 
     # 6. Wrist roll: align the gripper with the object. The gripper is symmetric
@@ -191,20 +180,61 @@ def solve_arm_angles(reach, pan_deg, z, angle, elbow_up=ELBOW_UP):
 
     return targets
 
+
+def move_arm_to_targets(robot, targets):
+    """Move the robot's arm to the specified joint targets."""
+    OPEN_GRIPPER_POSITION = 30  # Position to open the gripper
+
+    current = robot.get_observation()   
+
+    if targets is None:
+        print("No valid targets to move to.")
+        return
+
+    for i in range(100):
+        f = (i + 1)/100
+        itermediate_positions = {
+            'shoulder_pan.pos': current['shoulder_pan.pos'] + f * (targets['shoulder_pan.pos'] - current['shoulder_pan.pos']),
+            'shoulder_lift.pos': current['shoulder_lift.pos'] + f * (targets['shoulder_lift.pos'] - current['shoulder_lift.pos']),
+            'elbow_flex.pos': current['elbow_flex.pos'] + f * (targets['elbow_flex.pos'] - current['elbow_flex.pos']),
+            'wrist_flex.pos': current['wrist_flex.pos'] + f * (targets['wrist_flex.pos'] - current['wrist_flex.pos']),
+            'wrist_roll.pos': current['wrist_roll.pos'] + f * (targets['wrist_roll.pos'] - current['wrist_roll.pos']),
+            'gripper.pos': OPEN_GRIPPER_POSITION
+        }
+        robot.send_action(itermediate_positions)
+        time.sleep(0.01)  # Small delay to allow the arm to move smoothly
+    time.sleep(1)  # Wait for the arm to reach the position
+
+
+
+robot_config = SO101FollowerConfig(port=PORT, id=ROBOT_ID)
+robot = SO101Follower(robot_config)
 cam = CameraToArm()
 cap = cv.VideoCapture(0)
+
+
 if not cap.isOpened():
     raise RuntimeError('Could not open camera')
 def main():
-    while True:
-        ret, frame = cap.read()
-        if not ret:
+    try:
+        print("Connecting to robot...")
+        robot.connect()
+        print("Connected.")
+        robot.send_action(STARTING_POSITIONS)  # Move the robot to the starting position
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            best_box, x, y, z, reach, pan_deg, angle = find_object(frame)  # Get the best bounding box of the identified object
+            joint_targets = solve_arm_angles(reach, pan_deg, z, angle)  # Calculate the joint angles needed to reach the object
+            print(f"Joint targets: {joint_targets}, reach: {reach:.2f}")
+            move_arm_to_targets(robot, joint_targets)
             break
-
-        best_box, x, y, z, reach, pan_deg, angle = find_object(frame)  # Get the best bounding box of the identified object
-        joint_targets = solve_arm_angles(reach, pan_deg, z, angle)  # Calculate the joint angles needed to reach the object
-        print(f"Joint targets: {joint_targets}")
-
+    finally:
+        cap.release()
+        cv.destroyAllWindows()
+        robot.disconnect()
 
 if __name__ == "__main__":
     main()

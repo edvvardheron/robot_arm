@@ -139,18 +139,6 @@ def track_object(object_coords, pan, tilt):
 
 
 def position_arm(current, targets, gripper_open=25):
-    """
-    Interpolate shoulder_lift, elbow_flex and wrist_flex together to the
-    solved targets.
- 
-    NOTE the change from the old version: the wrist is NOT re-servoed
-    during the descent any more. Its angle is part of the IK solution, so
-    correcting it mid-motion would break the tip pose that was just
-    solved for.
- 
-    current : dict of the three joints' present .pos values
-    targets : (shoulder_lift, elbow_flex, wrist_flex) from solve_arm_angles
-    """
     shoulder_t, elbow_t, wrist_t = targets
  
     for i in range(100):
