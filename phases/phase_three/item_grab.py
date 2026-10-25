@@ -105,14 +105,18 @@ def grasp_from_contour(contour_px, z_cm, camera=None):
     long_angle = ((long_angle + 90.0) % 180.0) - 90.0   # an axis has no direction: fold to [-90, 90)
 
     length_cm = np.linalg.norm(long_e)
+    width_cm = np.linalg.norm(short_e)
     x, y = rect[0]
-    return float(x), float(y), long_angle, float(np.linalg.norm(short_e)), box, length_cm
+    return float(x), float(y), long_angle, width_cm, box, length_cm
 
 
 def find_object(frame):
-    """Find the target object in the aerial frame and return its coordinates.
-    
-    create a mask to identify the object based on its color and shape, and then use the YOLO model to classify the object and return its coordinates.
+    """
+    Find the target object in the aerial frame and return its coordinates.
+    create a mask to identify the object based on its color and shape,
+    and then use the YOLO model to classify the object and return its coordinates.
+    if it cant pick up that object, switch to the next highest confidence object in the frame.
+    If no object is found, return None.
     """
     results = model(frame)
     CONF_THRESHOLD = 0.6  # Confidence threshold for object detection
@@ -316,11 +320,70 @@ def move_to_hand_position():
     robot.send_action({"gripper.pos": 30})
     time.sleep(1)  # Allow time for the gripper to open
 
+def find_grasps(frame):
+    '''
+    this replaces the find_object function,
+    it uses the YOLO model to identify every pickable object
+    and provides a list, ranked from best to worst, of the objects that can be picked up by the robot.
+    '''
+
+    CONFIDENCE_THRESHOLD = 0.6  # Confidence threshold for object detection
+    results = model(frame)
+    if len(results[0].boxes) == 0:
+        return []
+    grasps = []
+    for i, box in enumerate(results[0].boxes):
+        cls_name, conf = model.names[int(box.cls[0])], float(box.conf[0])
+        if conf < CONFIDENCE_THRESHOLD:
+            continue
+        contour = results[0].masks.xy[i]
+        top_height = OBJECT_TOP_HEIGHT[cls_name]
+        x, y, long_angle, width_cm, box_cm, length_cm = grasp_from_contour(contour, top_height)
+        reach, pan_deg = cam.to_polar(x, y)
+        if reach < 7: #skip objects that are too close to the robot
+            return None
+        angle, clearance = gripper_clear(x, y, candidate_angles(long_angle, length_cm), i, results)
+        if angle is None:
+            print(f"Object {cls_name} at index {i} is blocked by other objects.")
+            continue
+        grasp = {
+                "class": cls_name,
+                 "confidence": conf,
+                 "x": x,
+                 "y": y,
+                 "z": HOVER_HEIGHT,
+                 "reach": reach, 
+                "pan_deg": pan_deg,
+                "grasp_angle": angle,
+                "clearance": clearance
+                }
+        grasp['joints'] = plan_joints(grasp)
+        if grasp['joints'] is None:
+            print(f"Object {cls_name} at index {i} is unreachable due to joint limits.")
+            continue
+        grasps.append(grasp)
+
+        # Sort the grasps by confidence and clearance, prioritizing higher confidence and more clearance
+    grasps.sort(key=lambda g: (g['confidence'], min(g['clearance'], 5.0)), reverse=True)
+    return grasps
+
+
+        
+        
+
+
+
+
 
 
 
 def gripper_clear(x, y, angles, target_index, results):
-    MARGIN_CM = 2.0  # Margin in cm to consider for gripper clearance
+
+    '''
+    Check if the gripper can be placed at a given position without colliding with other objects.
+    '''
+
+    MARGIN_CM = 1.0  # Margin in cm to consider for gripper clearance
     print(f'available angles: {angles}')
     neighbours = []
     for i, box in enumerate(results[0].boxes):
@@ -331,21 +394,39 @@ def gripper_clear(x, y, angles, target_index, results):
         neighbours.append(np.array([cam.pixel_to_arm(float(u), float(v), z)[:2] for u, v in np.asarray(mask).reshape(-1, 2)], dtype=np.float32))
 
     half_width = GRIPPER_OPEN_WIDTH / 2.0
+    best_angle, best_clearance = None, -math.inf
     for angle in angles:
         print(f"Checking gripper clearance at angle {angle} degrees.")
         px, py = -math.sin(math.radians(angle)) * half_width, math.cos(math.radians(angle)) * half_width
         fingers = np.array([[x + px, y + py], [x - px, y - py]], dtype=np.float32)
-        if all(cv.pointPolygonTest(poly, f, True) <= -MARGIN_CM for poly in neighbours for f in fingers):
-            return angle
-    print(f"Gripper blocked at angle {angle} degrees.")
-    return None  # No clear angle found
+        clearance = min((cv.pointPolygonTest(poly, f, True) for poly in neighbours for f in fingers), default=math.inf)
+        if clearance >= MARGIN_CM and clearance > best_clearance:
+            best_angle, best_clearance = angle, clearance
+    return best_angle, best_clearance
 
 def candidate_angles(long_angle, length_cm):
+
+    """
+    Generate a list of candidate angles for the gripper based on the long axis angle of the object and its length.
+    """
+
     angles = [long_angle]
     if length_cm < GRIPPER_OPEN_WIDTH:
         angles.append(long_angle + 90)
     return angles
 
+
+def plan_joints(grasp):
+    """
+    Plan the joint angles needed to reach the target location.
+    """
+    hover_joints = solve_arm_angles(**grasp, z=HOVER_HEIGHT)
+    item_joints = solve_arm_angles(**grasp, z=OBJECT_GRASP_HEIGHT)
+    return_joints = solve_arm_angles(**grasp, z=HOVER_HEIGHT + 5)
+    if None in (hover_joints, item_joints, return_joints):
+        return None, None, None
+
+    return {"hover_joint": hover_joints, "item_joint": item_joints, "return_joint": return_joints}
 
 robot_config = SO101FollowerConfig(port=PORT, id=ROBOT_ID)
 robot = SO101Follower(robot_config)
@@ -355,7 +436,12 @@ cap = open_camera()
 
 if not cap.isOpened():
     raise RuntimeError('Could not open camera')
-def main():
+def old_main():
+    '''
+    main loop for robot using the find_object function to identify and grab objects in the frame.
+    does not loop through all objects in the frame, only attemps to grab the first object it finds.
+    '''
+
     try:
         print("Connecting to robot...")
         robot.connect()
@@ -369,23 +455,31 @@ def main():
                 cap.grab()  # Grab a frame from the camera
             ret, frame = cap.read()
             hover_location = find_object(frame)  # Get the best bounding box of the identified object
-            #gripper_positions = gripper_block(hover_location)  # Check if the gripper will be blocked by the object
             if hover_location is not None:
                 # If an object is detected, move the arm to the target location and grab it
+
+                '''move the arm to the target location'''
+
                 hover_joints = solve_arm_angles(hover_location)  # Calculate the joint angles needed to reach the object
                 if hover_joints is None:
                     print("Target location is unreachable or breaks joint limits.")
                     continue
                 move_arm_to_targets(robot, hover_joints)
-                # drop the arm down to the object to grab it
-                item_location = list(hover_location)
-                item_location[3] = 1.5  # Set the z coordinate to 1.5 cm above the object
+
+
+                '''drop the arm down to the object to grab it'''
+
+                item_location = hover_location
+                item_location[3] = OBJECT_GRASP_HEIGHT  # Set the z coordinate to 1 cm above the object
                 item_location = solve_arm_angles(item_location)  # Calculate the joint angles needed to reach the object at the new z coordinate
                 move_arm_to_targets(robot, item_location)  # Move the arm to the calculated joint angles
                 close_gripper()  # Close the gripper to pick up the object
                 time.sleep(1)  # Allow time for the gripper to close
 
-                return_hover_location = list(hover_location)
+                '''move the arm back to the hover position after picking up the object,
+                higher to account for object weight'''
+
+                return_hover_location = hover_location
                 return_hover_location[3] = HOVER_HEIGHT + 5  # Set the z coordinate to the hover
                 return_hover_joints = solve_arm_angles(return_hover_location)  # Calculate the joint angles needed to reach the hover position
                 
@@ -393,7 +487,7 @@ def main():
 
                 time.sleep(1)  # Allow time for the arm to move back to the hover position
 
-
+                '''move the arm to a position suitable for handing over the object'''
 
                 move_to_hand_position()
             else:
@@ -403,6 +497,34 @@ def main():
         cap.release()
         cv.destroyAllWindows()
         robot.disconnect()
+
+def main():
+    print("Connecting to robot...")
+    robot.connect()
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            raise RuntimeError('Could not read from camera')
+        move_to_start()  # Move the robot to the starting position before attempting to grab an object
+        grasps = find_grasps(frame)
+        if not grasps:
+            print("No pickable objects detected.")
+            continue
+        g = grasps[0]  # Select the best grasp based on confidence and clearance
+        print(f"Attempting to pick up {g['class']} with confidence {g['confidence']:.2f} and clearance {g['clearance']:.2f} cm.")
+        move_arm_to_targets(robot, g['joints']['hover_joint'])
+        move_arm_to_targets(robot, g['joints']['item_joint'])
+        close_gripper()
+        time.sleep(1)  # Allow time for the gripper to close
+        move_arm_to_targets(robot, g['joints']['return_joint'], gripper_position=CLOSED_GRIPPER_POSITION)
+        time.sleep(1)  # Allow time for the arm to move back to the hover position
+        move_to_hand_position()
+
+        
+    
+
+
+    
 
 if __name__ == "__main__":
     main()
