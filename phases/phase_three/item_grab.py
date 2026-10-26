@@ -82,13 +82,12 @@ Convert these coordinates to the robot's coordinate system, and then use inverse
 Finally, move the robot's arm to the calculated joint angles and close the gripper at the correct angle to grab the object.'''
 
 def grasp_from_contour(contour_px, z_cm, camera=None):
-    """Mask outline (image pixels) -> grasp geometry in the ARM frame.
+    """Mask outline (image pixels) to grasp geometry in the arm frame.
 
     Every outline point is converted to arm coordinates first, and the rectangle
     is fitted there. That removes the camera's rotation relative to the arm, the
     flipped image y-axis and the lens distortion, so the angle needs no sign fix.
 
-    Returns (x, y, long_angle_deg, width_cm, box_cm):
 
     """
     camera = camera or cam
@@ -178,10 +177,10 @@ def solve_arm_angles(target_location, elbow_up=ELBOW_UP):
     # 1. Move into the shoulder_lift frame the planar IK is solved in.
     #    The pan axis sits PAN_AXIS_X from the shoulder axis, so an object `reach`
     #    from the pan axis is PAN_AXIS_X + reach from the shoulder axis.
-    reach = target_location[4]
-    pan_deg = target_location[5]
-    z = target_location[3]
-    angle = target_location[6]
+    reach = target_location['reach']
+    pan_deg = target_location['pan_deg']
+    z = target_location['z']
+    angle = target_location['grasp_angle']
     tip_x = reach + PAN_AXIS_X
     tip_y = z - SHOULDER_HEIGHT
 
@@ -329,7 +328,8 @@ def find_grasps(frame):
 
     CONFIDENCE_THRESHOLD = 0.6  # Confidence threshold for object detection
     results = model(frame)
-    if len(results[0].boxes) == 0:
+    if results[0].boxes is None:
+        print("No objects detected in the frame.")
         return []
     grasps = []
     for i, box in enumerate(results[0].boxes):
@@ -339,9 +339,9 @@ def find_grasps(frame):
         contour = results[0].masks.xy[i]
         top_height = OBJECT_TOP_HEIGHT[cls_name]
         x, y, long_angle, width_cm, box_cm, length_cm = grasp_from_contour(contour, top_height)
-        reach, pan_deg = cam.to_polar(x, y)
+        reach, pan_deg = cam.to_polar(x, y) # Convert to polar coordinates
         if reach < 7: #skip objects that are too close to the robot
-            return None
+            continue
         angle, clearance = gripper_clear(x, y, candidate_angles(long_angle, length_cm), i, results)
         if angle is None:
             print(f"Object {cls_name} at index {i} is blocked by other objects.")
@@ -368,13 +368,6 @@ def find_grasps(frame):
     return grasps
 
 
-        
-        
-
-
-
-
-
 
 
 def gripper_clear(x, y, angles, target_index, results):
@@ -399,7 +392,7 @@ def gripper_clear(x, y, angles, target_index, results):
         print(f"Checking gripper clearance at angle {angle} degrees.")
         px, py = -math.sin(math.radians(angle)) * half_width, math.cos(math.radians(angle)) * half_width
         fingers = np.array([[x + px, y + py], [x - px, y - py]], dtype=np.float32)
-        clearance = min((cv.pointPolygonTest(poly, f, True) for poly in neighbours for f in fingers), default=math.inf)
+        clearance = min((-cv.pointPolygonTest(poly, f, True) for poly in neighbours for f in fingers), default=math.inf)
         if clearance >= MARGIN_CM and clearance > best_clearance:
             best_angle, best_clearance = angle, clearance
     return best_angle, best_clearance
@@ -420,11 +413,11 @@ def plan_joints(grasp):
     """
     Plan the joint angles needed to reach the target location.
     """
-    hover_joints = solve_arm_angles(**grasp, z=HOVER_HEIGHT)
-    item_joints = solve_arm_angles(**grasp, z=OBJECT_GRASP_HEIGHT)
-    return_joints = solve_arm_angles(**grasp, z=HOVER_HEIGHT + 5)
+    hover_joints = solve_arm_angles({**grasp, "z": HOVER_HEIGHT})
+    item_joints = solve_arm_angles({**grasp, "z": OBJECT_GRASP_HEIGHT})
+    return_joints = solve_arm_angles({**grasp, "z": HOVER_HEIGHT + 5})
     if None in (hover_joints, item_joints, return_joints):
-        return None, None, None
+        return None
 
     return {"hover_joint": hover_joints, "item_joint": item_joints, "return_joint": return_joints}
 
@@ -499,26 +492,33 @@ def old_main():
         robot.disconnect()
 
 def main():
-    print("Connecting to robot...")
-    robot.connect()
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            raise RuntimeError('Could not read from camera')
-        move_to_start()  # Move the robot to the starting position before attempting to grab an object
-        grasps = find_grasps(frame)
-        if not grasps:
-            print("No pickable objects detected.")
-            continue
-        g = grasps[0]  # Select the best grasp based on confidence and clearance
-        print(f"Attempting to pick up {g['class']} with confidence {g['confidence']:.2f} and clearance {g['clearance']:.2f} cm.")
-        move_arm_to_targets(robot, g['joints']['hover_joint'])
-        move_arm_to_targets(robot, g['joints']['item_joint'])
-        close_gripper()
-        time.sleep(1)  # Allow time for the gripper to close
-        move_arm_to_targets(robot, g['joints']['return_joint'], gripper_position=CLOSED_GRIPPER_POSITION)
-        time.sleep(1)  # Allow time for the arm to move back to the hover position
-        move_to_hand_position()
+    try:
+        print("Connecting to robot...")
+        robot.connect()
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                raise RuntimeError('Could not read from camera')
+            move_to_start()  # Move the robot to the starting position before attempting to grab an object
+            grasps = find_grasps(frame)
+            if not grasps:
+                print("No pickable objects detected.")
+                time.sleep(1)  # Wait for a moment before trying again
+                break  # Exit the loop if no pickable objects are detected
+            g = grasps[0]  # Select the best grasp based on confidence and clearance
+            print(f"Attempting to pick up {g['class']} with confidence {g['confidence']:.2f} and clearance {g['clearance']:.2f} cm.")
+            move_arm_to_targets(robot, g['joints']['hover_joint'])
+            move_arm_to_targets(robot, g['joints']['item_joint'])
+            close_gripper()
+            time.sleep(1)  # Allow time for the gripper to close
+            move_arm_to_targets(robot, g['joints']['return_joint'], gripper_position=CLOSED_GRIPPER_POSITION)
+            time.sleep(1)  # Allow time for the arm to move back to the hover position
+            move_to_hand_position()
+
+    finally:
+        cap.release()
+        cv.destroyAllWindows()
+        robot.disconnect()
 
         
     
